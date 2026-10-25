@@ -1,0 +1,13 @@
+name: mystui
+services:
+  mystvpn:
+    build: .
+    container_name: mystvpn
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: 1 # wg-quick sets this when it replaces the default route.
+    ports:
+      - "127.0.0.1:${MYSTUI_PORT:-1080}:1080" # SOCKS5 proxy via the VPN
+    volumes:
+      - ../data:/data # sign-in tokens and WireGuard keypair

@@ -1,0 +1,11 @@
+# Changes here will be overwritten by Copier
+_commit: e92376f
+_src_path: gh:audivir/copier-template
+description: Terminal front end for the Mysterium VPN CLI, running in Docker
+github_org: audivir
+go_module_path: github.com/audivir/mystui
+go_version: '1.26'
+project_name: mystui
+project_slug: mystui
+project_type: go
+publishable: true
