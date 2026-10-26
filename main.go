@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,8 +23,18 @@ import (
 	"golang.org/x/text/language/display"
 )
 
-// version is the release tag, set at build time with -ldflags "-X main.version=<tag>".
+// version is set with -ldflags -X main.version=... for release builds, resolved from the
+// module build info for go install, and falls back to dev otherwise.
 var version = "dev"
+
+func init() {
+	if version != "dev" {
+		return
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		version = info.Main.Version
+	}
+}
 
 const container = "mystvpn"
 
