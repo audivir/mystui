@@ -237,6 +237,14 @@ func fetchStatus() tea.Msg {
 			s.city = v
 		}
 	}
+	// status reads saved state, which outlives a container restart, but the WireGuard
+	// interface does not, so a connection without one is stale.
+	if s.connected {
+		args := []string{"exec", container, "ip", "-o", "link", "show", "type", "wireguard"}
+		if link, _ := exec.Command("docker", args...).Output(); strings.TrimSpace(string(link)) == "" {
+			s.connected = false
+		}
+	}
 	if s.connected {
 		s.ipType = loadType(s.country)
 	} else {

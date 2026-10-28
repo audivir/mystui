@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -196,5 +197,44 @@ func TestComposeUsesPortVariable(t *testing.T) {
 	b, _ := dockerFiles.ReadFile("docker/compose.yaml")
 	if !strings.Contains(string(b), "${MYSTUI_PORT:-1080}:1080") {
 		t.Fatal("compose file must map MYSTUI_PORT to port 1080 of the container")
+	}
+}
+
+// fakeDocker puts a docker script on PATH that answers inspect, mystvpn status and ip link.
+func fakeDocker(t *testing.T, wgLinks string) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a shell script")
+	}
+	dir := t.TempDir()
+	script := `#!/bin/sh
+case "$1" in
+inspect) echo true ;;
+exec)
+	case "$3" in
+	mystvpn) printf 'connected: yes\nIP address: 1.2.3.4\ncountry: AT\ncity: salzburg\n' ;;
+	ip) printf '%s' "$FAKE_WG" ;;
+	esac ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_WG", wgLinks)
+}
+
+func TestStaleConnectionAfterRestart(t *testing.T) {
+	projectDirBackup := projectDir
+	projectDir = t.TempDir()
+	defer func() { projectDir = projectDirBackup }()
+
+	fakeDocker(t, "") // saved state says connected, but the container has no tunnel.
+	if st := fetchStatus().(statusMsg); !st.containerUp || st.connected {
+		t.Fatalf("stale state must not count as connected: %+v", st)
+	}
+
+	fakeDocker(t, "3: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420\n")
+	if st := fetchStatus().(statusMsg); !st.connected || st.country != "AT" {
+		t.Fatalf("live tunnel must count as connected: %+v", st)
 	}
 }
