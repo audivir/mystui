@@ -21,6 +21,18 @@ RUN set -e; \
     install -m755 "$(find x -name mystvpn -type f | head -1)" /usr/local/bin/mystvpn; \
     rm -rf /tmp/dl
 
+# every mystvpn call goes through a wrapper that records the last connect, and the watchdog connects
+# again with it when the tunnel dies, e.g. after the host slept
+RUN mv /usr/local/bin/mystvpn /usr/local/bin/mystvpn.real
+COPY mystvpn-wrapper.sh /usr/local/bin/mystvpn
+COPY watchdog.sh /usr/local/bin/watchdog.sh
+
+# the proxy runs as its own user, so that the kill-switch can cut off exactly its traffic: it may
+# only leave through the tunnel, and answer the host on its own port
+RUN apk add --no-cache su-exec && adduser -S -D -H -s /sbin/nologin proxy
+COPY killswitch.sh /usr/local/bin/killswitch.sh
+ENV KILLSWITCH_SPORT=1080
+
 # small SOCKS5 server, not packaged for Alpine
 COPY --from=microsocks /src/microsocks /usr/local/bin/microsocks
 
@@ -31,4 +43,4 @@ EXPOSE 1080
 
 # the tunnel comes up with `docker exec mystvpn mystvpn connect ...`.
 # the proxy runs in the same network namespace, so its traffic leaves through the tunnel.
-CMD ["microsocks", "-i", "0.0.0.0", "-p", "1080"]
+CMD ["sh", "-c", "killswitch.sh && { watchdog.sh & exec su-exec proxy microsocks -i 0.0.0.0 -p 1080; }"]

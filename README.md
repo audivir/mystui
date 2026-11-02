@@ -114,12 +114,43 @@ Changing `MYSTUI_PORT` takes effect when the container is recreated: press `u`.
 
 To remove everything: stop the container with `x`, run `docker rmi` on the built image, and delete `~/.local/share/mystui` (or below `$XDG_DATA_HOME`).
 
+### Tunnel recovery and kill-switch
+
+The container survives a sleep of the host, but the tunnel behind it can die: `mystvpn status` shows
+the saved state, and the WireGuard interface stays after the exit node stops answering.
+
+- `mystui` marks the VPN as lost when the newest handshake is older than 5 minutes, and shows
+  `connection lost`. While it is open, it reconnects with the saved country, at most every 2 minutes.
+- Inside the container, `watchdog.sh` does the same with the TUI closed. It records the last connect
+  through a wrapper around `mystvpn`, so a `disconnect` from the TUI is respected.
+- `killswitch.sh` runs the SOCKS5 proxy as its own user and rejects its traffic unless it leaves
+  through the tunnel. While the tunnel is down or replaced, the proxy fails instead of exposing the
+  address of the host.
+
 ### Limitations
 
 - The VPN CLI chooses the city; you can only pick the country and the IP type.
 - The country list needs a signed-in session. Without one the TUI says so.
 - On Windows, the check for a running Chrome only sees the normal profile.
 - The `mystvpn` version is pinned in `docker/Dockerfile` (`MYSTVPN_VERSION`).
+
+## Development
+
+```sh
+go test ./...
+uvx prek run -a
+```
+
+The package `mystvpn` (status parsing, tunnel and handshake checks, the reconnect, and the scripts
+for the container) is also imported by `mystgw`, a private tool that runs one such container per
+country. Keep it free of anything specific to either tool. The scripts are embedded in the package,
+and `writeFiles` writes them next to the `Dockerfile`, which copies them into the image. A change to
+a script only reaches the container after `u` rebuilds the image.
+
+`TestStaleConnectionAfterRestart` and the tests that follow it run against a fake `docker` script
+(`fakeDocker` in `main_test.go`), so they need no daemon. They cannot show the behavior of a real
+tunnel or of the kill-switch rules. Check those by hand: put the Mac to sleep with the VPN
+connected, and wake it.
 
 ## License
 

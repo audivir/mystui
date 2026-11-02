@@ -12,11 +12,13 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/audivir/mystui/mystvpn"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/text/language"
@@ -54,9 +56,8 @@ var (
 	warn = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	sel  = lipgloss.NewStyle().Reverse(true)
 
-	ipTypes   = []string{"residential", "hosting"}
-	codeRe    = regexp.MustCompile(`^[A-Z]{2}$`)
-	errAuthRe = regexp.MustCompile(`authentication required|not signed in|auth`)
+	ipTypes = []string{"residential", "hosting"}
+	codeRe  = regexp.MustCompile(`^[A-Z]{2}$`)
 )
 
 // defaultProfile returns the data directory of the normal Chrome or Chromium on this OS.
@@ -122,6 +123,9 @@ func writeFiles() error {
 	if err := os.MkdirAll(filepath.Join(projectDir, "docker"), 0o755); err != nil {
 		return err
 	}
+	if err := mystvpn.WriteScripts(filepath.Join(projectDir, "docker")); err != nil {
+		return err
+	}
 	for _, name := range []string{"Dockerfile", "compose.yaml"} {
 		data, err := dockerFiles.ReadFile("docker/" + name)
 		if err != nil {
@@ -150,6 +154,22 @@ func run(timeout time.Duration, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// vpnClient runs mystvpn and the tunnel checks in the container.
+var vpnClient = &mystvpn.Client{Container: container, Run: func(name string, args ...string) (string, error) {
+	// connect builds the tunnel, which takes longer than the status checks.
+	timeout := 10 * time.Second
+	if slices.Contains(args, "connect") {
+		timeout = 90 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}}
+
+// repairInterval is the time between two automatic reconnects of a lost tunnel.
+const repairInterval = 2 * time.Minute
+
 // vpn stores the state of the container and the VPN connection.
 type vpn struct {
 	containerUp bool
@@ -158,6 +178,8 @@ type vpn struct {
 	ip, country string
 	city        string
 	ipType      string // residential or hosting, empty when unknown.
+	iface       string // the WireGuard interface of mystvpn, which a reconnect deletes if it is dead.
+	lost        string // why the tunnel is dead although mystvpn reports it, empty when it is not.
 }
 
 // typeFile returns the path of the file that remembers the IP type of the connection.
@@ -195,6 +217,7 @@ type model struct {
 	msg      string
 	w, h     int
 	listErr  string
+	repaired time.Time // when the last automatic reconnect of a lost tunnel started.
 }
 
 type (
@@ -219,35 +242,25 @@ func fetchStatus() tea.Msg {
 		return statusMsg(s)
 	}
 	s.containerUp = true
-	out, _ := run(5*time.Second, "status")
-	for _, l := range strings.Split(out, "\n") {
-		k, v, ok := strings.Cut(l, ":")
-		if !ok {
-			continue
-		}
-		v = strings.TrimSpace(v)
-		switch strings.TrimSpace(k) {
-		case "connected":
-			s.connected = v == "yes"
-		case "IP address":
-			s.ip = v
-		case "country":
-			s.country = v
-		case "city":
-			s.city = v
-		}
-	}
+	st, _, _ := vpnClient.Status()
+	s.connected, s.ip, s.country, s.city = st.Connected, st.IP, st.Country, st.City
 	// status reads saved state, which outlives a container restart, but the WireGuard
-	// interface does not, so a connection without one is stale.
+	// interface does not, so a connection without one is stale. The interface also outlives an
+	// exit node that stopped answering, so the handshake has to be recent too.
 	if s.connected {
-		args := []string{"exec", container, "ip", "-o", "link", "show", "type", "wireguard"}
-		if link, _ := exec.Command("docker", args...).Output(); strings.TrimSpace(string(link)) == "" {
+		if tun := vpnClient.Tunnel(time.Now()); !tun.Up() {
 			s.connected = false
+			s.iface = tun.Interface
+			if tun.Interface != "" {
+				s.lost = tun.Describe()
+			}
 		}
 	}
-	if s.connected {
+	switch {
+	case s.connected || s.lost != "":
+		// a lost tunnel keeps the IP type, as the reconnect needs it.
 		s.ipType = loadType(s.country)
-	} else {
+	default:
 		saveType("", "")
 	}
 	return statusMsg(s)
@@ -257,7 +270,7 @@ func fetchCodes(ipType string) tea.Cmd {
 	return func() tea.Msg {
 		out, err := run(30*time.Second, "countries", "--ip-type", ipType)
 		if err != nil {
-			return codesMsg{needAuth: errAuthRe.MatchString(out), err: lastLine(out)}
+			return codesMsg{needAuth: mystvpn.AuthRequired(out), err: lastLine(out)}
 		}
 		var codes []string
 		for _, f := range strings.Fields(out) {
@@ -278,6 +291,23 @@ func connect(code, ipType string) tea.Cmd {
 		}
 		saveType(ipType, code)
 		return doneMsg{"connected: " + strings.ReplaceAll(out, "\n", "  ")}
+	}
+}
+
+// reconnect brings a lost tunnel back to its country, with the saved IP type or else residential.
+// A plain refresh fails here, as its requests would enter the dead tunnel, so the dead
+// interface goes first.
+func reconnect(code, ipType, iface string) tea.Cmd {
+	return func() tea.Msg {
+		if ipType == "" {
+			ipType = ipTypes[0]
+		}
+		out, err := vpnClient.Reconnect(code, ipType, iface)
+		if err != nil {
+			return doneMsg{"reconnect failed: " + lastLine(out)}
+		}
+		saveType(ipType, code)
+		return doneMsg{"reconnected: " + strings.ReplaceAll(out, "\n", "  ")}
 	}
 }
 
@@ -515,6 +545,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 	case statusMsg:
 		m.st = vpn(msg)
+		if m.st.lost != "" && m.busy == "" && time.Since(m.repaired) > repairInterval {
+			m.repaired = time.Now()
+			m.busy = "reconnecting, " + m.st.lost
+			return m, reconnect(m.st.country, m.st.ipType, m.st.iface)
+		}
 	case tickMsg:
 		return m, tea.Batch(func() tea.Msg { return fetchStatus() }, tick())
 	case codesMsg:
@@ -670,6 +705,9 @@ func (m model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, simple("disconnect", "disconnect")
 	case "f":
 		m.busy = "reconnecting"
+		if m.st.lost != "" {
+			return m, reconnect(m.st.country, m.st.ipType, m.st.iface)
+		}
 		return m, simple("refresh", "refresh")
 	case "a":
 		return m, login()
@@ -732,7 +770,11 @@ func (m model) View() string {
 		}
 		fmt.Fprintf(&b, "vpn %s%s   exit %s  %s %s\n", good.Render("connected"), kind, st.ip, st.city, strings.TrimSpace(flag(st.country)+" "+st.country))
 	} else {
-		fmt.Fprintf(&b, "vpn %s\n", warn.Render("not connected"))
+		if st.lost != "" {
+			fmt.Fprintf(&b, "vpn %s   %s\n", bad.Render("connection lost"), dim.Render(st.lost))
+		} else {
+			fmt.Fprintf(&b, "vpn %s\n", warn.Render("not connected"))
+		}
 	}
 
 	b.WriteString(dim.Render(strings.Repeat("─", width)) + "\n")

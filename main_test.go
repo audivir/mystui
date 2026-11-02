@@ -1,11 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -21,6 +23,12 @@ func TestWriteFiles(t *testing.T) {
 	projectDir = filepath.Join(t.TempDir(), "proj")
 	if err := writeFiles(); err != nil {
 		t.Fatal(err)
+	}
+	for _, name := range []string{"watchdog.sh", "mystvpn-wrapper.sh", "killswitch.sh"} {
+		// the Dockerfile copies the scripts from its build context, so they must be written next to it.
+		if _, err := os.Stat(filepath.Join(projectDir, "docker", name)); err != nil {
+			t.Fatalf("%s not written: %v", name, err)
+		}
 	}
 	for _, name := range []string{"Dockerfile", "compose.yaml"} {
 		want, _ := dockerFiles.ReadFile("docker/" + name)
@@ -210,9 +218,11 @@ func fakeDocker(t *testing.T, wgLinks string) {
 case "$1" in
 inspect) echo true ;;
 exec)
+	[ -n "$FAKE_LOG" ] && echo "$*" >> "$FAKE_LOG"
 	case "$3" in
 	mystvpn) printf 'connected: yes\nIP address: 1.2.3.4\ncountry: AT\ncity: salzburg\n' ;;
 	ip) printf '%s' "$FAKE_WG" ;;
+	wg) printf '%s' "$FAKE_HS" ;;
 	esac ;;
 esac
 `
@@ -221,6 +231,7 @@ esac
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_WG", wgLinks)
+	t.Setenv("FAKE_HS", fmt.Sprintf("KEY\t%d", time.Now().Unix()-10))
 }
 
 func TestStaleConnectionAfterRestart(t *testing.T) {
@@ -236,5 +247,68 @@ func TestStaleConnectionAfterRestart(t *testing.T) {
 	fakeDocker(t, "3: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420\n")
 	if st := fetchStatus().(statusMsg); !st.connected || st.country != "AT" {
 		t.Fatalf("live tunnel must count as connected: %+v", st)
+	}
+}
+
+func TestLostTunnelIsNotConnected(t *testing.T) {
+	projectDirBackup := projectDir
+	projectDir = t.TempDir()
+	defer func() { projectDir = projectDirBackup }()
+
+	// the interface and the saved state are there, but the exit node stopped answering.
+	fakeDocker(t, "3: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420\n")
+	saveType("residential", "AT")
+	t.Setenv("FAKE_HS", fmt.Sprintf("KEY\t%d", time.Now().Add(-6*time.Hour).Unix()))
+	st := fetchStatus().(statusMsg)
+	if st.connected || !strings.Contains(st.lost, "last handshake") {
+		t.Fatalf("a tunnel without a recent handshake must be lost: %+v", st)
+	}
+	if loadType("AT") != "residential" {
+		t.Fatal("a lost tunnel must keep the IP type for the reconnect")
+	}
+	if view := (model{st: vpn(st), w: 100, h: 30}).View(); !strings.Contains(view, "connection lost") {
+		t.Fatalf("the view must say the connection is lost:\n%s", view)
+	}
+}
+
+func TestLostTunnelReconnectsOncePerInterval(t *testing.T) {
+	lost := statusMsg{containerUp: true, lost: "last handshake 6h0m0s ago"}
+	next, cmd := model{}.Update(lost)
+	m := next.(model)
+	if cmd == nil || !strings.HasPrefix(m.busy, "reconnecting") {
+		t.Fatalf("a lost tunnel must start a reconnect: busy=%q", m.busy)
+	}
+	m.busy = ""
+	if _, cmd := m.Update(lost); cmd != nil {
+		t.Fatal("the next status inside the interval must not reconnect again")
+	}
+	m.repaired = time.Now().Add(-2 * repairInterval)
+	if _, cmd := m.Update(lost); cmd == nil {
+		t.Fatal("a lost tunnel must reconnect again after the interval")
+	}
+}
+
+func TestReconnectRemovesTheDeadInterfaceFirst(t *testing.T) {
+	projectDirBackup := projectDir
+	projectDir = t.TempDir()
+	defer func() { projectDir = projectDirBackup }()
+
+	fakeDocker(t, "")
+	log := filepath.Join(t.TempDir(), "calls")
+	t.Setenv("FAKE_LOG", log)
+	// every request of mystvpn enters a dead tunnel, so its interface has to go before anything else.
+	msg := reconnect("AT", "", "mvpn-1")().(doneMsg)
+	if !strings.HasPrefix(msg.text, "reconnected") {
+		t.Fatalf("reconnect failed: %s", msg.text)
+	}
+	calls, _ := os.ReadFile(log)
+	del := strings.Index(string(calls), "ip link delete mvpn-1")
+	disconnect := strings.Index(string(calls), "mystvpn disconnect")
+	connect := strings.Index(string(calls), "mystvpn connect --country AT --ip-type residential")
+	if del < 0 || disconnect < del || connect < disconnect {
+		t.Fatalf("the order must be delete, disconnect, connect:\n%s", calls)
+	}
+	if loadType("AT") != "residential" {
+		t.Fatal("the reconnect must remember the IP type")
 	}
 }
