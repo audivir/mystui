@@ -177,7 +177,12 @@ func TestCLIClear(t *testing.T) {
 	if code, _, _ := cli(t, "", "clear", "--all"); code != 2 {
 		t.Fatal("unknown option")
 	}
+	// the refusal only comes after the size check, so the normal profile has to exist, in a temporary home.
+	defer func(h string) { home = h }(home)
+	home = t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	bundledProfile = defaultProfile()
+	_ = os.MkdirAll(bundledProfile, 0o700)
 	if code, _, errOut := cli(t, "", "clear", "-y"); code != 1 || !strings.Contains(errOut, "refusing") {
 		t.Fatalf("the normal profile must never be deleted: %d %q", code, errOut)
 	}
