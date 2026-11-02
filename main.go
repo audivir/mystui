@@ -218,6 +218,19 @@ type model struct {
 	w, h     int
 	listErr  string
 	repaired time.Time // when the last automatic reconnect of a lost tunnel started.
+	placed   bool      // the cursor was put on the connected country, which happens once per list.
+}
+
+// placeCursor puts the cursor on the country of the connection once the list and the status are
+// both known, so Enter reconnects there and the neighbours are the likely choices.
+// Later moves of the user are kept: the list refreshes with every action.
+func (m *model) placeCursor() {
+	if m.placed || m.st.country == "" || (!m.st.connected && m.st.lost == "") {
+		return
+	}
+	if i := slices.Index(m.codes, m.st.country); i >= 0 {
+		m.cursor, m.placed = i, true
+	}
 }
 
 type (
@@ -548,6 +561,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 	case statusMsg:
 		m.st = vpn(msg)
+		m.placeCursor()
 		if m.st.lost != "" && m.busy == "" && time.Since(m.repaired) > repairInterval {
 			m.repaired = time.Now()
 			m.busy = "reconnecting, " + m.st.lost
@@ -560,6 +574,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor >= len(m.codes) {
 			m.cursor = 0
 		}
+		m.placeCursor()
 	case doneMsg:
 		m.busy, m.msg = "", msg.text
 		return m, tea.Batch(func() tea.Msg { return fetchStatus() }, fetchCodes(ipTypes[m.ipType]))
@@ -683,7 +698,7 @@ func (m model) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "t":
 		m.ipType = (m.ipType + 1) % len(ipTypes)
-		m.codes, m.cursor = nil, 0
+		m.codes, m.cursor, m.placed = nil, 0, false
 		return m, fetchCodes(ipTypes[m.ipType])
 	case "C":
 		size, err := dirSize(bundledProfile)

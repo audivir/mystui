@@ -318,3 +318,37 @@ func TestReconnectRemovesTheDeadInterfaceFirst(t *testing.T) {
 		t.Fatal("the reconnect must remember the IP type")
 	}
 }
+
+func TestCursorStartsOnTheConnectedCountry(t *testing.T) {
+	codes := codesMsg{codes: []string{"AT", "DE", "FR"}}
+	connected := statusMsg{containerUp: true, connected: true, country: "DE"}
+
+	// the list may arrive before or after the status.
+	for _, order := range [][]any{{codes, connected}, {connected, codes}} {
+		var m tea.Model = model{}
+		for _, msg := range order {
+			m, _ = m.Update(msg)
+		}
+		if got := m.(model).cursor; got != 1 {
+			t.Fatalf("cursor on %d, want 1 (DE) for order %v", got, order)
+		}
+	}
+
+	// a move of the user stays, although the list refreshes after every action.
+	m := model{}
+	next, _ := m.Update(connected)
+	next, _ = next.Update(codes)
+	m = next.(model)
+	m, _ = press(m, "l")
+	next, _ = m.Update(codes)
+	if got := next.(model).cursor; got != 2 {
+		t.Fatalf("a refresh moved the cursor of the user to %d", got)
+	}
+
+	// without a connection the cursor stays at the start.
+	next, _ = model{}.Update(codes)
+	next, _ = next.Update(statusMsg{containerUp: true, country: "DE"})
+	if got := next.(model).cursor; got != 0 {
+		t.Fatalf("a disconnected state has no country to select, got %d", got)
+	}
+}
