@@ -125,7 +125,8 @@ the saved state, and the WireGuard interface stays after the exit node stops ans
   through a wrapper around `mystvpn`, so a `disconnect` from the TUI is respected.
 - `killswitch.sh` runs the SOCKS5 proxy as its own user and rejects its traffic unless it leaves
   through the tunnel. While the tunnel is down or replaced, the proxy fails instead of exposing the
-  address of the host.
+  address of the host. UDP except DNS may leave through any interface, because the encrypted packets
+  of the tunnel itself count as traffic of the proxy user.
 
 ### Limitations
 

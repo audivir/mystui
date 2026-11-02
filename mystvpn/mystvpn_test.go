@@ -272,6 +272,8 @@ func TestKillswitchAllowsTheProxyUserOnlyThroughTheTunnel(t *testing.T) {
 		"iptables -N KILLSWITCH",
 		"iptables -A KILLSWITCH -o lo -j ACCEPT",
 		"iptables -A KILLSWITCH -o mvpn+ -j ACCEPT",
+		// the encrypted packets of the tunnel carry the uid of the proxy user.
+		"iptables -A KILLSWITCH -p udp ! --dport 53 -j ACCEPT",
 		"iptables -A KILLSWITCH -j REJECT",
 		"iptables -C OUTPUT -m owner --uid-owner proxy -j KILLSWITCH",
 		"iptables -I OUTPUT 1 -m owner --uid-owner proxy -j KILLSWITCH",

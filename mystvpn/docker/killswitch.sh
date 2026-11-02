@@ -3,6 +3,9 @@
 # mystvpn, so a dead tunnel or a reconnect cuts it off instead of sending it out with the address
 # of the host. The rules match the interface name with a wildcard, so they hold before the tunnel
 # exists and while it is replaced. mystvpn and the watchdog run as root and stay unaffected.
+# The encrypted packets of the tunnel still carry the uid of the proxy user, but leave through the
+# network of the container as UDP, so UDP is allowed except for DNS (a lookup outside the tunnel
+# would leak the names). The proxy itself only speaks TCP, so no plain traffic goes out this way.
 #
 # KILLSWITCH_USER       user of the proxy (default proxy)
 # KILLSWITCH_ALLOW      interfaces the user may send through (default lo mvpn+)
@@ -22,6 +25,7 @@ for ipt in iptables ip6tables; do
   for iface in $allow; do
     "$ipt" -A KILLSWITCH -o "$iface" -j ACCEPT
   done
+  "$ipt" -A KILLSWITCH -p udp ! --dport 53 -j ACCEPT
   if [ -n "$sport" ]; then
     "$ipt" -A KILLSWITCH -p tcp --sport "$sport" -j ACCEPT
   fi
