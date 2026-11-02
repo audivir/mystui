@@ -85,6 +85,26 @@ curl -x socks5h://127.0.0.1:1080 https://api.ipify.org
 | `?` | show all keys or the short list |
 | `q` | quit |
 
+### Command line
+
+Every key also exists as a command, for scripts and SSH sessions:
+
+```sh
+mystui status                      # container, proxy and VPN; exit code 1 unless connected
+mystui connect AT                  # country as two letters, residential by default
+mystui connect --ip-type hosting DE
+mystui disconnect
+mystui signin                      # prints the approval link, then waits
+mystui signout
+mystui up                          # build the image and start the container (key u)
+mystui down                        # stop the container (key x)
+mystui chrome                      # a separate profile if Chrome is already running
+mystui clear [-y]                  # delete the separate Chrome data, after a yes unless -y is given
+```
+
+A command exits with 1 when the key would show an error, and with 2 for wrong arguments.
+`connect` replaces a lost tunnel like the reconnect key does.
+
 ### Chrome
 
 `c` opens Chrome with the proxy flags on your normal profile, so your logins and extensions are available.

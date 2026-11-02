@@ -227,7 +227,10 @@ type (
 		needAuth bool
 		err      string
 	}
-	doneMsg struct{ text string }
+	doneMsg struct {
+		text   string
+		failed bool // the command ran and did not succeed, so a script can exit non-zero.
+	}
 	tickMsg time.Time
 )
 
@@ -287,10 +290,10 @@ func connect(code, ipType string) tea.Cmd {
 	return func() tea.Msg {
 		out, err := run(90*time.Second, "connect", "--country", code, "--ip-type", ipType)
 		if err != nil {
-			return doneMsg{"connect failed: " + lastLine(out)}
+			return doneMsg{text: "connect failed: " + lastLine(out), failed: true}
 		}
 		saveType(ipType, code)
-		return doneMsg{"connected: " + strings.ReplaceAll(out, "\n", "  ")}
+		return doneMsg{text: "connected: " + strings.ReplaceAll(out, "\n", "  ")}
 	}
 }
 
@@ -304,26 +307,26 @@ func reconnect(code, ipType, iface string) tea.Cmd {
 		}
 		out, err := vpnClient.Reconnect(code, ipType, iface)
 		if err != nil {
-			return doneMsg{"reconnect failed: " + lastLine(out)}
+			return doneMsg{text: "reconnect failed: " + lastLine(out), failed: true}
 		}
 		saveType(ipType, code)
-		return doneMsg{"reconnected: " + strings.ReplaceAll(out, "\n", "  ")}
+		return doneMsg{text: "reconnected: " + strings.ReplaceAll(out, "\n", "  ")}
 	}
 }
 
 func simple(label string, args ...string) tea.Cmd {
 	return func() tea.Msg {
 		if out, err := run(60*time.Second, args...); err != nil {
-			return doneMsg{label + " failed: " + lastLine(out)}
+			return doneMsg{text: label + " failed: " + lastLine(out), failed: true}
 		}
-		return doneMsg{label + " done"}
+		return doneMsg{text: label + " done"}
 	}
 }
 
 func compose(args ...string) tea.Cmd {
 	return func() tea.Msg {
 		if err := writeFiles(); err != nil {
-			return doneMsg{"cannot write docker files: " + err.Error()}
+			return doneMsg{text: "cannot write docker files: " + err.Error(), failed: true}
 		}
 		name, pre := "docker", []string{"compose"}
 		if exec.Command("docker", "compose", "version").Run() != nil {
@@ -331,9 +334,9 @@ func compose(args ...string) tea.Cmd {
 		}
 		full := append(append(pre, "-f", composeFile), args...)
 		if out, err := exec.Command(name, full...).CombinedOutput(); err != nil {
-			return doneMsg{"compose failed: " + lastLine(string(out))}
+			return doneMsg{text: "compose failed: " + lastLine(string(out)), failed: true}
 		}
-		return doneMsg{"compose " + args[0] + " done"}
+		return doneMsg{text: "compose " + args[0] + " done"}
 	}
 }
 
@@ -342,9 +345,9 @@ func login() tea.Cmd {
 	c := exec.Command("docker", "exec", "-it", container, "mystvpn", "auth")
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		if err != nil {
-			return doneMsg{"sign-in failed: " + err.Error()}
+			return doneMsg{text: "sign-in failed: " + err.Error(), failed: true}
 		}
-		return doneMsg{"signed in"}
+		return doneMsg{text: "signed in"}
 	})
 }
 
@@ -450,10 +453,10 @@ func chrome(profile string) tea.Cmd {
 			err = cmd.Start()
 		}
 		if err != nil {
-			return doneMsg{"chrome failed: " + err.Error()}
+			return doneMsg{text: "chrome failed: " + err.Error(), failed: true}
 		}
 		go func() { _ = cmd.Wait() }() // reap the process while the browser keeps running.
-		return doneMsg{"chrome started through the proxy (" + label + ")"}
+		return doneMsg{text: "chrome started through the proxy (" + label + ")"}
 	}
 }
 
@@ -496,12 +499,12 @@ var shortKeys = []keyItem{{"enter", "connect"}, {"d", "disconnect"}, {"?", "all 
 func clearChrome() tea.Cmd {
 	return func() tea.Msg {
 		if filepath.Base(bundledProfile) != "chrome" || sameDir(bundledProfile, defaultProfile()) {
-			return doneMsg{"refusing to delete " + bundledProfile}
+			return doneMsg{text: "refusing to delete " + bundledProfile, failed: true}
 		}
 		if err := os.RemoveAll(bundledProfile); err != nil {
-			return doneMsg{"clearing chrome data failed: " + err.Error()}
+			return doneMsg{text: "clearing chrome data failed: " + err.Error(), failed: true}
 		}
-		return doneMsg{"chrome data cleared"}
+		return doneMsg{text: "chrome data cleared"}
 	}
 }
 
@@ -870,9 +873,21 @@ func lastLine(s string) string {
 const usage = `mystui: terminal front end for the Mysterium VPN CLI, running in Docker
 
 usage:
-  mystui          start the interface
-  mystui version  print the version
-  mystui help     show this text
+  mystui                        start the interface
+  mystui status                 show container, proxy and VPN; exit code 1 unless connected
+  mystui connect [--ip-type residential|hosting] COUNTRY
+                                connect to a country (two letters, like AT), default residential
+  mystui disconnect             disconnect the VPN
+  mystui signin                 sign in to Mysterium (prints the approval link)
+  mystui signout                sign out
+  mystui up                     build the image and start the container
+  mystui down                   stop the container
+  mystui chrome                 open Chrome through the proxy (a separate profile if one is running)
+  mystui clear [-y]             delete the separate Chrome data, after a yes unless -y is given
+  mystui version                print the version
+  mystui help                   show this text
+
+The commands do what the keys of the interface do, and exit with 1 when the key would show an error.
 
 environment:
   MYSTUI_DIR              directory for generated files, data, and Chrome profile (default $XDG_DATA_HOME/mystui or ~/.local/share/mystui)
@@ -893,8 +908,11 @@ func main() {
 		case "help", "-h", "--help":
 			fmt.Print(usage)
 		default:
-			fmt.Fprint(os.Stderr, usage)
-			os.Exit(2)
+			if !slices.Contains(cliCommands, os.Args[1]) {
+				fmt.Fprint(os.Stderr, usage)
+				os.Exit(2)
+			}
+			os.Exit(runCLI(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 		}
 		return
 	}
