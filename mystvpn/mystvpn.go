@@ -185,8 +185,8 @@ func (t Tunnel) Describe() string {
 //go:embed docker/watchdog.sh docker/mystvpn-wrapper.sh docker/killswitch.sh
 var scripts embed.FS
 
-// WriteScripts writes watchdog.sh, mystvpn-wrapper.sh, and killswitch.sh into a Docker build context, where the
-// Dockerfile copies them next to mystvpn.
+// WriteScripts writes watchdog.sh, mystvpn-wrapper.sh, and killswitch.sh into a Docker build
+// context, where the Dockerfile copies them next to mystvpn.
 func WriteScripts(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
