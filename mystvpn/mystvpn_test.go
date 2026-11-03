@@ -295,7 +295,10 @@ func TestKillswitchAllowsTheProxyUserOnlyThroughTheTunnel(t *testing.T) {
 	for _, line := range []string{
 		"iptables -A KILLSWITCH -o wg0 -j ACCEPT",
 		"iptables -A KILLSWITCH -p tcp --sport 1080 -j ACCEPT",
-		"iptables -I FORWARD 1 -i wg0 ! -o mvpn+ ! -o wg0 -j REJECT",
+		"iptables -A KILLSWITCH_FORWARD -o mvpn+ -j RETURN",
+		"iptables -A KILLSWITCH_FORWARD -o wg0 -j RETURN",
+		"iptables -A KILLSWITCH_FORWARD -j REJECT",
+		"iptables -I FORWARD 1 -i wg0 -j KILLSWITCH_FORWARD",
 	} {
 		if !strings.Contains(got, line+"\n") {
 			t.Fatalf("missing %q in:\n%s", line, got)

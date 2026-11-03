@@ -33,7 +33,12 @@ for ipt in iptables ip6tables; do
   "$ipt" -C OUTPUT -m owner --uid-owner "$user" -j KILLSWITCH 2>/dev/null ||
     "$ipt" -I OUTPUT 1 -m owner --uid-owner "$user" -j KILLSWITCH
   if [ -n "$forward_in" ]; then
-    "$ipt" -C FORWARD -i "$forward_in" ! -o mvpn+ ! -o "$forward_in" -j REJECT 2>/dev/null ||
-      "$ipt" -I FORWARD 1 -i "$forward_in" ! -o mvpn+ ! -o "$forward_in" -j REJECT
+    # iptables takes one -o per rule, so the interfaces that may be left go into a chain of their own
+    "$ipt" -N KILLSWITCH_FORWARD 2>/dev/null || "$ipt" -F KILLSWITCH_FORWARD
+    "$ipt" -A KILLSWITCH_FORWARD -o mvpn+ -j RETURN
+    "$ipt" -A KILLSWITCH_FORWARD -o "$forward_in" -j RETURN
+    "$ipt" -A KILLSWITCH_FORWARD -j REJECT
+    "$ipt" -C FORWARD -i "$forward_in" -j KILLSWITCH_FORWARD 2>/dev/null ||
+      "$ipt" -I FORWARD 1 -i "$forward_in" -j KILLSWITCH_FORWARD
   fi
 done
