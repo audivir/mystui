@@ -54,8 +54,9 @@ while :; do
   if [ -f "$last" ]; then
     read -r connected_at args <"$last"
     iface="$(tunnel_interface)"
-    # a tunnel that was connected just now may not have shaken hands yet
-    if [ "$(($(date +%s) - connected_at))" -gt "$grace" ] && is_dead "$iface"; then
+    # a tunnel that was connected just now may not have shaken hands yet, but one that is gone
+    # has nothing to wait for
+    if { [ -z "$iface" ] || [ "$(($(date +%s) - connected_at))" -gt "$grace" ]; } && is_dead "$iface"; then
       if [ -n "$iface" ]; then
         sh -c "$nudge" >/dev/null 2>&1
         sleep "$nudge_wait"

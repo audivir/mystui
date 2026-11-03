@@ -220,6 +220,18 @@ func TestWatchdogRepairsAMissingInterfaceAfterARestart(t *testing.T) {
 	}
 }
 
+func TestWatchdogDoesNotWaitForTheGraceOfAMissingInterface(t *testing.T) {
+	w := newWatchdogEnv(t)
+	w.connectedAt(5) // connected just now, but the interface is gone, e.g. deleted by hand.
+	if err := os.WriteFile(filepath.Join(w.dir, "ip"), []byte("#!/bin/sh\necho \"ip $*\" >> \"$DATA_DIR/calls\""), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.run("watchdog.sh")
+	if !strings.Contains(w.calls(), "real connect --country AT") {
+		t.Fatalf("a missing interface must not wait for the grace period:\n%s", w.calls())
+	}
+}
+
 func TestWrapperRecordsOnlyWhatTheWatchdogMayRepeat(t *testing.T) {
 	w := newWatchdogEnv(t)
 	last := filepath.Join(w.dir, ".last-connect")
