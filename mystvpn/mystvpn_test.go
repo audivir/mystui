@@ -281,6 +281,18 @@ func TestWatchdogWaitsTheCooldownBetweenReplacements(t *testing.T) {
 	}
 }
 
+func TestWatchdogPausesLongerAfterEachFailedConnect(t *testing.T) {
+	w := newWatchdogEnv(t)
+	w.connectedAt(3600)
+	w.probe = "false"
+	w.rounds = 2
+	t.Setenv("FAKE_FAIL", "connect")
+	out := w.run("watchdog.sh")
+	if !strings.Contains(out, "connecting failed, trying again in 10 seconds") {
+		t.Fatalf("the first pause must be the first step of the backoff:\n%s", out)
+	}
+}
+
 func TestWatchdogProbeCanBeSwitchedOff(t *testing.T) {
 	w := newWatchdogEnv(t)
 	w.connectedAt(3600)

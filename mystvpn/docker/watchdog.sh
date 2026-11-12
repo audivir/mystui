@@ -10,8 +10,9 @@
 # both ways: by default it makes a TLS request to two independent hosts, any HTTP answer counts, and
 # it is bound to the tunnel interface (WATCHDOG_IFACE in the probe), so that it cannot succeed over
 # another route once the tunnel is gone. A ping would only prove that ICMP gets through.
-# Two connects are at least WATCHDOG_COOLDOWN seconds apart, so a broken uplink of the host does not
-# hammer the API of mystvpn. An empty WATCHDOG_PROBE turns the probe off.
+# Two connects are at least WATCHDOG_COOLDOWN seconds apart, and after a failed connect the pauses
+# in WATCHDOG_BACKOFF grow step by step, so a broken uplink of the host or an error of the API of
+# mystvpn is not hit every few seconds. An empty WATCHDOG_PROBE turns the probe off.
 #
 # After the host slept, the exit node may still know the tunnel. A packet then starts a new
 # handshake and the exit address stays, so the watchdog sends one first and waits before it gives up.
@@ -29,11 +30,13 @@ default_probe='curl -s -o /dev/null -m 2 --interface "$WATCHDOG_IFACE" https://1
 probe="${WATCHDOG_PROBE-$default_probe}"
 probe_fails="${WATCHDOG_PROBE_FAILS:-2}"
 cooldown="${WATCHDOG_COOLDOWN:-30}"
+backoff="${WATCHDOG_BACKOFF:-10 30 60}"
 rounds="${WATCHDOG_ROUNDS:-0}"
 real="${MYSTVPN_REAL:-/usr/local/bin/mystvpn.real}"
 wrapper="${MYSTVPN:-mystvpn}"
 last="${DATA_DIR:-/data}/.last-connect"
 pause=0
+connect_fails=0
 fails=0
 replaced_at=0
 round=0
@@ -63,9 +66,12 @@ replace_tunnel() { # interface, arguments
   if "$wrapper" $2; then
     log "connected again"
     pause=0
+    connect_fails=0
   else
-    log "connecting failed, trying again later"
-    pause=60
+    connect_fails=$((connect_fails + 1))
+    # the pauses grow with each failed connect, and the last one repeats.
+    pause="$(echo "$backoff" | awk -v n="$connect_fails" '{ print (n > NF ? $NF : $n) }')"
+    log "connecting failed, trying again in $pause seconds"
   fi
 }
 
