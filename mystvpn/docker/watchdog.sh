@@ -23,7 +23,7 @@ nudge="${WATCHDOG_NUDGE:-ping -c 2 -W 3 1.1.1.1}"
 nudge_wait="${WATCHDOG_NUDGE_WAIT:-8}"
 grace="${WATCHDOG_GRACE:-60}"
 exclude="${WATCHDOG_EXCLUDE:-wg0}"
-# the variable has to expand when the probe runs, not here
+# the variable has to expand when the probe runs, not here.
 # shellcheck disable=SC2016
 default_probe='curl -s -o /dev/null -m 2 --interface "$WATCHDOG_IFACE" https://1.1.1.1/cdn-cgi/trace || curl -s -o /dev/null -m 2 --interface "$WATCHDOG_IFACE" https://9.9.9.9/'
 probe="${WATCHDOG_PROBE-$default_probe}"
@@ -75,7 +75,7 @@ while :; do
     read -r connected_at args <"$last"
     iface="$(tunnel_interface)"
     replaced=0
-    # a tunnel with a fresh handshake that carries no traffic is dead too
+    # a tunnel with a fresh handshake that carries no traffic is dead too.
     if [ -n "$probe" ] && [ -n "$iface" ] && [ "$(($(date +%s) - connected_at))" -gt "$grace" ]; then
       if WATCHDOG_IFACE="$iface" sh -c "$probe" >/dev/null 2>&1; then
         fails=0

@@ -211,7 +211,7 @@ func (w *watchdogEnv) probeFailing(n int) {
 
 func TestWatchdogReplacesATunnelThatShakesHandsButCarriesNoTraffic(t *testing.T) {
 	w := newWatchdogEnv(t)
-	w.connectedAt(3600) // the handshake is fresh, so the handshake check alone would keep it
+	w.connectedAt(3600) // the handshake is fresh, so the handshake check alone would keep it.
 	w.probe = "false"
 	w.rounds = 2
 	out := w.run("watchdog.sh")
@@ -237,7 +237,7 @@ func TestWatchdogDefaultProbeNeedsBothHostsToFailBeforeItCountsAsDead(t *testing
 	w.connectedAt(3600)
 	w.probe = "default"
 	w.rounds = 2
-	t.Setenv("FAKE_CURL_RC", "28") // timeout
+	t.Setenv("FAKE_CURL_RC", "28") // timeout.
 	out := w.run("watchdog.sh")
 	if !strings.Contains(w.calls(), "--interface mvpn-1 https://9.9.9.9/") {
 		t.Fatalf("the second host must be asked when the first fails:\n%s", w.calls())
@@ -261,7 +261,7 @@ func TestWatchdogProbeSeesTheTunnelInterface(t *testing.T) {
 func TestWatchdogToleratesAFewFailedProbes(t *testing.T) {
 	w := newWatchdogEnv(t)
 	w.connectedAt(3600)
-	w.probeFailing(1) // fails once, then recovers: one short of the limit
+	w.probeFailing(1) // fails once, then recovers: one short of the limit.
 	w.rounds = 6
 	w.run("watchdog.sh")
 	if strings.Contains(w.calls(), "delete") || strings.Contains(w.calls(), "real connect") {
@@ -273,7 +273,7 @@ func TestWatchdogWaitsTheCooldownBetweenReplacements(t *testing.T) {
 	w := newWatchdogEnv(t)
 	w.connectedAt(3600)
 	w.probe = "false"
-	w.rounds = 6 // three runs of two failures
+	w.rounds = 6 // three runs of two failures.
 	t.Setenv("FAKE_COOLDOWN", "3600")
 	w.run("watchdog.sh")
 	if n := strings.Count(w.calls(), "real connect"); n != 1 {
