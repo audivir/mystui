@@ -98,6 +98,10 @@ type watchdogEnv struct {
 	handshake int64
 	// nudge is the command that stands for the packet that starts a handshake.
 	nudge string
+	// probe is the command that stands for a packet through the tunnel, and rounds how often the
+	// watchdog loops before it exits.
+	probe  string
+	rounds int
 }
 
 func newWatchdogEnv(t *testing.T) *watchdogEnv {
@@ -117,7 +121,7 @@ case "$*" in "-o link show type wireguard") printf '2: wg0: <UP>\n3: mvpn-1: <UP
 			t.Fatal(err)
 		}
 	}
-	return &watchdogEnv{t: t, dir: dir, handshake: time.Now().Unix() - 10, nudge: "true"}
+	return &watchdogEnv{t: t, dir: dir, handshake: time.Now().Unix() - 10, nudge: "true", probe: "true", rounds: 1}
 }
 
 func (w *watchdogEnv) run(script string, args ...string) string {
@@ -138,7 +142,10 @@ func (w *watchdogEnv) try(script string, args ...string) (string, error) {
 		"DATA_DIR=" + w.dir,
 		"MYSTVPN_REAL=" + filepath.Join(w.dir, "mystvpn.real"),
 		"MYSTVPN=" + filepath.Join(w.dir, "mystvpn-wrapper.sh"),
-		"WATCHDOG_ONCE=1",
+		"WATCHDOG_ROUNDS=" + fmt.Sprint(w.rounds),
+		"WATCHDOG_INTERVAL=0",
+		"WATCHDOG_PROBE=" + w.probe,
+		"WATCHDOG_COOLDOWN=" + os.Getenv("FAKE_COOLDOWN"),
 		"WATCHDOG_NUDGE_WAIT=0",
 		"WATCHDOG_NUDGE=" + w.nudge,
 		"FAKE_FAIL=" + os.Getenv("FAKE_FAIL"),
@@ -187,6 +194,57 @@ func TestWatchdogKeepsTheTunnelWhenTheHandshakeReturnsAfterANudge(t *testing.T) 
 	out := w.run("watchdog.sh")
 	if !strings.Contains(out, "recovered by itself") || strings.Contains(w.calls(), "delete") || strings.Contains(w.calls(), "real connect") {
 		t.Fatalf("a tunnel that shakes hands again must keep its exit address:\n%s\n%s", out, w.calls())
+	}
+}
+
+// probeFailing makes the probe fail for the first n calls and succeed afterwards.
+func (w *watchdogEnv) probeFailing(n int) {
+	counter := filepath.Join(w.dir, "probes")
+	w.probe = fmt.Sprintf("echo x >> %q; [ $(wc -l < %q) -gt %d ]", counter, counter, n)
+}
+
+func TestWatchdogReplacesATunnelThatShakesHandsButCarriesNoTraffic(t *testing.T) {
+	w := newWatchdogEnv(t)
+	w.connectedAt(3600) // the handshake is fresh, so the handshake check alone would keep it
+	w.probe = "false"
+	w.rounds = 3
+	out := w.run("watchdog.sh")
+	if !strings.Contains(out, "no traffic through mvpn-1 in 3 probes") || !strings.Contains(w.calls(), "real connect --country AT") {
+		t.Fatalf("three failed probes must replace the tunnel:\n%s\n%s", out, w.calls())
+	}
+}
+
+func TestWatchdogToleratesAFewFailedProbes(t *testing.T) {
+	w := newWatchdogEnv(t)
+	w.connectedAt(3600)
+	w.probeFailing(2) // fails twice, then recovers: one short of the limit
+	w.rounds = 6
+	w.run("watchdog.sh")
+	if strings.Contains(w.calls(), "delete") || strings.Contains(w.calls(), "real connect") {
+		t.Fatalf("two failures in a row must not replace the tunnel:\n%s", w.calls())
+	}
+}
+
+func TestWatchdogWaitsTheCooldownBetweenReplacements(t *testing.T) {
+	w := newWatchdogEnv(t)
+	w.connectedAt(3600)
+	w.probe = "false"
+	w.rounds = 9 // three runs of three failures
+	t.Setenv("FAKE_COOLDOWN", "3600")
+	w.run("watchdog.sh")
+	if n := strings.Count(w.calls(), "real connect"); n != 1 {
+		t.Fatalf("the cooldown must allow one replacement, got %d:\n%s", n, w.calls())
+	}
+}
+
+func TestWatchdogProbeCanBeSwitchedOff(t *testing.T) {
+	w := newWatchdogEnv(t)
+	w.connectedAt(3600)
+	w.probe = ""
+	w.rounds = 5
+	w.run("watchdog.sh")
+	if strings.Contains(w.calls(), "real connect") {
+		t.Fatalf("without a probe only the handshake counts:\n%s", w.calls())
 	}
 }
 
