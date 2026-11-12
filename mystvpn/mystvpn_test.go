@@ -115,6 +115,7 @@ echo "ip $*" >> "$DATA_DIR/calls"
 case "$*" in "-o link show type wireguard") printf '2: wg0: <UP>\n3: mvpn-1: <UP>\n' ;; esac`,
 		"wg":           "#!/bin/sh\nprintf 'KEY\\t%s\\n' \"$(cat \"$DATA_DIR/handshake\")\"",
 		"mystvpn.real": "#!/bin/sh\necho \"real $*\" >> \"$DATA_DIR/calls\"\n[ \"$FAKE_FAIL\" = \"$1\" ] && exit 1\nexit 0",
+		"curl":         "#!/bin/sh\necho \"curl $*\" >> \"$DATA_DIR/calls\"\nexit \"${FAKE_CURL_RC:-0}\"",
 	}
 	for name, body := range fakes {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
@@ -137,6 +138,10 @@ func (w *watchdogEnv) try(script string, args ...string) (string, error) {
 		w.t.Fatal(err)
 	}
 	cmd := exec.Command("sh", append([]string{filepath.Join(w.dir, script)}, args...)...)
+	probe := "WATCHDOG_PROBE=" + w.probe
+	if w.probe == "default" {
+		probe = "WATCHDOG_UNRELATED=1" // leaves the default probe in place
+	}
 	cmd.Env = []string{
 		"PATH=" + w.dir + ":/usr/bin:/bin",
 		"DATA_DIR=" + w.dir,
@@ -144,11 +149,12 @@ func (w *watchdogEnv) try(script string, args ...string) (string, error) {
 		"MYSTVPN=" + filepath.Join(w.dir, "mystvpn-wrapper.sh"),
 		"WATCHDOG_ROUNDS=" + fmt.Sprint(w.rounds),
 		"WATCHDOG_INTERVAL=0",
-		"WATCHDOG_PROBE=" + w.probe,
+		probe,
 		"WATCHDOG_COOLDOWN=" + os.Getenv("FAKE_COOLDOWN"),
 		"WATCHDOG_NUDGE_WAIT=0",
 		"WATCHDOG_NUDGE=" + w.nudge,
 		"FAKE_FAIL=" + os.Getenv("FAKE_FAIL"),
+		"FAKE_CURL_RC=" + os.Getenv("FAKE_CURL_RC"),
 	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -207,21 +213,59 @@ func TestWatchdogReplacesATunnelThatShakesHandsButCarriesNoTraffic(t *testing.T)
 	w := newWatchdogEnv(t)
 	w.connectedAt(3600) // the handshake is fresh, so the handshake check alone would keep it
 	w.probe = "false"
-	w.rounds = 3
+	w.rounds = 2
 	out := w.run("watchdog.sh")
-	if !strings.Contains(out, "no traffic through mvpn-1 in 3 probes") || !strings.Contains(w.calls(), "real connect --country AT") {
-		t.Fatalf("three failed probes must replace the tunnel:\n%s\n%s", out, w.calls())
+	if !strings.Contains(out, "no traffic through mvpn-1 in 2 probes") || !strings.Contains(w.calls(), "real connect --country AT") {
+		t.Fatalf("two failed probes must replace the tunnel:\n%s\n%s", out, w.calls())
+	}
+}
+
+func TestWatchdogDefaultProbeIsATLSRequestBoundToTheTunnel(t *testing.T) {
+	w := newWatchdogEnv(t)
+	w.connectedAt(3600)
+	w.probe = "default"
+	w.run("watchdog.sh")
+	// the first host answers, so the second is not asked, and the tunnel stays.
+	want := "curl -s -o /dev/null -m 2 --interface mvpn-1 https://1.1.1.1/cdn-cgi/trace"
+	if !strings.Contains(w.calls(), want) || strings.Contains(w.calls(), "9.9.9.9") || strings.Contains(w.calls(), "real connect") {
+		t.Fatalf("the probe must ask one host through the tunnel interface:\n%s", w.calls())
+	}
+}
+
+func TestWatchdogDefaultProbeNeedsBothHostsToFailBeforeItCountsAsDead(t *testing.T) {
+	w := newWatchdogEnv(t)
+	w.connectedAt(3600)
+	w.probe = "default"
+	w.rounds = 2
+	t.Setenv("FAKE_CURL_RC", "28") // timeout
+	out := w.run("watchdog.sh")
+	if !strings.Contains(w.calls(), "--interface mvpn-1 https://9.9.9.9/") {
+		t.Fatalf("the second host must be asked when the first fails:\n%s", w.calls())
+	}
+	if !strings.Contains(out, "no traffic through mvpn-1 in 2 probes") || !strings.Contains(w.calls(), "real connect --country AT") {
+		t.Fatalf("two failed rounds must replace the tunnel:\n%s\n%s", out, w.calls())
+	}
+}
+
+func TestWatchdogProbeSeesTheTunnelInterface(t *testing.T) {
+	w := newWatchdogEnv(t)
+	w.connectedAt(3600)
+	w.probe = `[ "$WATCHDOG_IFACE" = mvpn-1 ]`
+	w.rounds = 4
+	w.run("watchdog.sh")
+	if strings.Contains(w.calls(), "real connect") {
+		t.Fatalf("the probe must run with the name of the tunnel interface:\n%s", w.calls())
 	}
 }
 
 func TestWatchdogToleratesAFewFailedProbes(t *testing.T) {
 	w := newWatchdogEnv(t)
 	w.connectedAt(3600)
-	w.probeFailing(2) // fails twice, then recovers: one short of the limit
+	w.probeFailing(1) // fails once, then recovers: one short of the limit
 	w.rounds = 6
 	w.run("watchdog.sh")
 	if strings.Contains(w.calls(), "delete") || strings.Contains(w.calls(), "real connect") {
-		t.Fatalf("two failures in a row must not replace the tunnel:\n%s", w.calls())
+		t.Fatalf("one failure must not replace the tunnel:\n%s", w.calls())
 	}
 }
 
@@ -229,7 +273,7 @@ func TestWatchdogWaitsTheCooldownBetweenReplacements(t *testing.T) {
 	w := newWatchdogEnv(t)
 	w.connectedAt(3600)
 	w.probe = "false"
-	w.rounds = 9 // three runs of three failures
+	w.rounds = 6 // three runs of two failures
 	t.Setenv("FAKE_COOLDOWN", "3600")
 	w.run("watchdog.sh")
 	if n := strings.Count(w.calls(), "real connect"); n != 1 {

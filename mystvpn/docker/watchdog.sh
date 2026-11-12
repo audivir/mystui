@@ -5,10 +5,13 @@
 # route, so the requests of mystvpn only work once the interface is deleted.
 #
 # A tunnel can shake hands and still carry no traffic, e.g. when the exit node has lost its uplink.
-# So every WATCHDOG_INTERVAL seconds the watchdog also sends a packet through the tunnel with
-# WATCHDOG_PROBE, and after WATCHDOG_PROBE_FAILS failures in a row it connects again. Two connects
-# are at least WATCHDOG_COOLDOWN seconds apart, so a broken uplink of the host does not hammer the
-# API of mystvpn. An empty WATCHDOG_PROBE turns the probe off.
+# So every WATCHDOG_INTERVAL seconds the watchdog also runs WATCHDOG_PROBE, and after
+# WATCHDOG_PROBE_FAILS failures in a row it connects again. The probe has to prove that data flows
+# both ways: by default it makes a TLS request to two independent hosts, any HTTP answer counts, and
+# it is bound to the tunnel interface (WATCHDOG_IFACE in the probe), so that it cannot succeed over
+# another route once the tunnel is gone. A ping would only prove that ICMP gets through.
+# Two connects are at least WATCHDOG_COOLDOWN seconds apart, so a broken uplink of the host does not
+# hammer the API of mystvpn. An empty WATCHDOG_PROBE turns the probe off.
 #
 # After the host slept, the exit node may still know the tunnel. A packet then starts a new
 # handshake and the exit address stays, so the watchdog sends one first and waits before it gives up.
@@ -20,8 +23,11 @@ nudge="${WATCHDOG_NUDGE:-ping -c 2 -W 3 1.1.1.1}"
 nudge_wait="${WATCHDOG_NUDGE_WAIT:-8}"
 grace="${WATCHDOG_GRACE:-60}"
 exclude="${WATCHDOG_EXCLUDE:-wg0}"
-probe="${WATCHDOG_PROBE-ping -c 1 -W 1 1.1.1.1 || ping -c 1 -W 1 8.8.8.8}"
-probe_fails="${WATCHDOG_PROBE_FAILS:-3}"
+# the variable has to expand when the probe runs, not here
+# shellcheck disable=SC2016
+default_probe='curl -s -o /dev/null -m 2 --interface "$WATCHDOG_IFACE" https://1.1.1.1/cdn-cgi/trace || curl -s -o /dev/null -m 2 --interface "$WATCHDOG_IFACE" https://9.9.9.9/'
+probe="${WATCHDOG_PROBE-$default_probe}"
+probe_fails="${WATCHDOG_PROBE_FAILS:-2}"
 cooldown="${WATCHDOG_COOLDOWN:-30}"
 rounds="${WATCHDOG_ROUNDS:-0}"
 real="${MYSTVPN_REAL:-/usr/local/bin/mystvpn.real}"
@@ -71,7 +77,7 @@ while :; do
     replaced=0
     # a tunnel with a fresh handshake that carries no traffic is dead too
     if [ -n "$probe" ] && [ -n "$iface" ] && [ "$(($(date +%s) - connected_at))" -gt "$grace" ]; then
-      if sh -c "$probe" >/dev/null 2>&1; then
+      if WATCHDOG_IFACE="$iface" sh -c "$probe" >/dev/null 2>&1; then
         fails=0
       else
         fails=$((fails + 1))
